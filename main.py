@@ -1,7 +1,7 @@
 import os
 import json
-import io
 import logging
+from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters,
@@ -12,22 +12,27 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.service_account import Credentials as DriveCredentials
-from datetime import datetime
 
 # Config logger
 logging.basicConfig(level=logging.INFO)
 
-# Definim stările conversației
+# Stările conversației
 SELECT_FIRMA, GET_EMITENT, GET_SUM, GET_DATE, GET_CATEGORY = range(5)
 
-# Dicționar temporar de stocare a datelor
+# Dicționar temporar per utilizator
 user_data = {}
 
-# Define firmele și sheets-urile lor
+# Sheets și foldere per firmă
 FIRME = {
     "Costel Financial Broker SRL": "bonuri_costel_financial",
     "Like Arrows SRL": "bonuri_like_arrows"
 }
+DRIVE_FOLDERS = {
+    "Costel Financial Broker SRL": "1nJYF876VwK9Fa1E2hBheqMIOEu8JY7Jw",
+    "Like Arrows SRL": "1uXbiK07wKZc6EAxfGsFIOIhIdyqcj3eD"
+}
+
+# Sheets
 
 def get_gspread_client():
     keyfile_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
@@ -38,10 +43,34 @@ def get_gspread_client():
     ])
     return gspread.authorize(credentials)
 
+# Drive
+
+def get_drive_service():
+    keyfile_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    creds_dict = json.loads(keyfile_json)
+    creds = DriveCredentials.from_service_account_info(creds_dict, scopes=[
+        "https://www.googleapis.com/auth/drive"
+    ])
+    return build("drive", "v3", credentials=creds)
+
+def create_or_get_folder(service, name, parent_id):
+    query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
+    results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+    files = results.get("files", [])
+    if files:
+        return files[0]["id"]
+    file_metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [parent_id]
+    }
+    file = service.files().create(body=file_metadata, fields="id").execute()
+    return file.get("id")
+
+# Comenzi
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Salut! Trimite-mi o poză cu bonul sau factura și începem înregistrarea 📸"
-    )
+    await update.message.reply_text("Salut! Trimite-mi o poză cu bonul și începem înregistrarea 📸")
     return ConversationHandler.END
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -52,9 +81,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_path = f"temp/{photo.file_unique_id}.jpg"
     await file.download_to_drive(file_path)
 
-    user_data[user_id] = {
-        "photo_path": file_path
-    }
+    user_data[user_id] = {"photo_path": file_path}
 
     reply_keyboard = [[f] for f in FIRME.keys()]
     await update.message.reply_text(
@@ -91,38 +118,6 @@ async def get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[user_id]["data"] = update.message.text
     await update.message.reply_text("4️⃣ Ce tip de cheltuială este? (ex: alimentație, transport, birou)")
     return GET_CATEGORY
-
-from datetime import datetime
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-from google.oauth2.service_account import Credentials as DriveCredentials
-
-DRIVE_FOLDERS = {
-    "Costel Financial Broker SRL": "1nJYF876VwK9Fa1E2hBheqMIOEu8JY7Jw",
-    "Like Arrows SRL": "1uXbiK07wKZc6EAxfGsFIOIhIdyqcj3eD"
-}
-
-def get_drive_service():
-    keyfile_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
-    creds_dict = json.loads(keyfile_json)
-    creds = DriveCredentials.from_service_account_info(creds_dict, scopes=[
-        "https://www.googleapis.com/auth/drive"
-    ])
-    return build("drive", "v3", credentials=creds)
-
-def create_or_get_folder(service, name, parent_id):
-    query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
-    results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
-    files = results.get("files", [])
-    if files:
-        return files[0]["id"]
-    file_metadata = {
-        "name": name,
-        "mimeType": "application/vnd.google-apps.folder",
-        "parents": [parent_id]
-    }
-    file = service.files().create(body=file_metadata, fields="id").execute()
-    return file.get("id")
 
 async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -181,6 +176,7 @@ async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del user_data[user_id]
     return ConversationHandler.END
 
+# Main
 
 def main():
     app = ApplicationBuilder().token(os.getenv("TELEGRAM_TOKEN")).build()
@@ -204,4 +200,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
