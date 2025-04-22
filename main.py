@@ -11,3 +11,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+print("TOKEN:", os.getenv("TELEGRAM_TOKEN"))
