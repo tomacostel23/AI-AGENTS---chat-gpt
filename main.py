@@ -88,23 +88,79 @@ async def get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("4️⃣ Ce tip de cheltuială este? (ex: alimentație, transport, birou)")
     return GET_CATEGORY
 
+from datetime import datetime
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from google.oauth2.service_account import Credentials as DriveCredentials
+
+DRIVE_FOLDERS = {
+    "Costel Financial Broker SRL": "1nJYF876VwK9Fa1E2hBheqMIOEu8JY7Jw",
+    "Like Arrows SRL": "1uXbiK07wKZc6EAxfGsFIOIhIdyqcj3eD"
+}
+
+def get_drive_service():
+    keyfile_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    creds_dict = json.loads(keyfile_json)
+    creds = DriveCredentials.from_service_account_info(creds_dict, scopes=[
+        "https://www.googleapis.com/auth/drive"
+    ])
+    return build("drive", "v3", credentials=creds)
+
+def create_or_get_folder(service, name, parent_id):
+    query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
+    results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+    files = results.get("files", [])
+    if files:
+        return files[0]["id"]
+    file_metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [parent_id]
+    }
+    file = service.files().create(body=file_metadata, fields="id").execute()
+    return file.get("id")
+
 async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data[user_id]["categorie"] = update.message.text
 
     data = user_data[user_id]
     sheet_name = FIRME[data["firma"]]
+    drive_folder_id = DRIVE_FOLDERS[data["firma"]]
+    photo_path = data["photo_path"]
 
     try:
-        client = get_gspread_client()
-        sheet = client.open(sheet_name).worksheet("Bonuri")
-        await update.message.reply_text("📄 Acces la Google Sheet OK ✅")
+        drive_service = get_drive_service()
+        sheet_client = get_gspread_client()
+        sheet = sheet_client.open(sheet_name).worksheet("Bonuri")
     except Exception as e:
-        await update.message.reply_text(f"❌ Eroare la accesarea Google Sheet:\n{e}")
-        print("EROARE ACCES SHEET:", e)
+        await update.message.reply_text(f"❌ Eroare la inițializare Drive/Sheets:\n{e}")
         return ConversationHandler.END
 
-    photo_link = "poza_locala"  # în viitor: link Google Drive
+    try:
+        date_obj = datetime.strptime(data["data"], "%d.%m.%Y")
+        folder_luna = date_obj.strftime("%B_%Y").capitalize()
+        folder_bonuri = create_or_get_folder(drive_service, "Bonuri", drive_folder_id)
+        folder_luna_id = create_or_get_folder(drive_service, folder_luna, folder_bonuri)
+
+        file_metadata = {
+            "name": f"bon_{datetime.now().strftime('%H%M%S')}.jpg",
+            "parents": [folder_luna_id]
+        }
+        media = MediaFileUpload(photo_path, mimetype="image/jpeg")
+        file = drive_service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+
+        file_id = file.get("id")
+        drive_service.permissions().create(
+            fileId=file_id,
+            body={"type": "anyone", "role": "reader"},
+            fields="id"
+        ).execute()
+        file_url = f"https://drive.google.com/file/d/{file_id}/view"
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Eroare la salvarea pozei în Google Drive:\n{e}")
+        return ConversationHandler.END
 
     try:
         sheet.append_row([
@@ -112,15 +168,15 @@ async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["emitent"],
             data["suma"],
             data["categorie"],
-            photo_link
+            file_url
         ])
-        await update.message.reply_text(f"✅ Bonul a fost salvat în *{data['firma']}*. Mulțumim!")
+        await update.message.reply_text(f"✅ Bonul a fost salvat în Google Sheet și poza în Drive 📁")
     except Exception as e:
-        await update.message.reply_text(f"❌ Eroare la salvarea în sheet:\n{e}")
-        print("EROARE SCRIERE SHEET:", e)
+        await update.message.reply_text(f"❌ Eroare la scrierea în sheet:\n{e}")
 
     del user_data[user_id]
     return ConversationHandler.END
+
 
 def main():
     app = ApplicationBuilder().token(os.getenv("TELEGRAM_TOKEN")).build()
