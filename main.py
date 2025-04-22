@@ -1,14 +1,16 @@
-from telegram.ext import ApplicationBuilder, CommandHandler
 import os
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 async def start(update, context):
-    await update.message.reply_text("Salut! Sunt un bot funcțional! 🚀")
+    await update.message.reply_text("Salut! Sunt online!")
 
 def main():
-    app = ApplicationBuilder().token(os.getenv("TELEGRAM_TOKEN")).build()
+    token = os.getenv("TELEGRAM_TOKEN")
+    print("🔍 TOKEN DEBUG:", token)  # <- linia importantă
+
+    app = ApplicationBuilder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.run_polling()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
-print("TOKEN:", os.getenv("TELEGRAM_TOKEN"))
