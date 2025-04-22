@@ -1,42 +1,141 @@
 import os
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+import json
+import io
+import logging
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, filters,
+    ContextTypes, ConversationHandler
+)
+import gspread
+from google.oauth2.service_account import Credentials
 
-# /start
+# Config logger
+logging.basicConfig(level=logging.INFO)
+
+# Definim stările conversației
+SELECT_FIRMA, GET_EMITENT, GET_SUM, GET_DATE, GET_CATEGORY = range(5)
+
+# Dicționar temporar de stocare a datelor
+user_data = {}
+
+# Define firmele și sheets-urile lor
+FIRME = {
+    "Costel Financial Broker SRL": "bonuri_costel_financial",
+    "Like Arrows SRL": "bonuri_like_arrows"
+}
+
+def get_gspread_client():
+    keyfile_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    keyfile_dict = json.loads(keyfile_json)
+    credentials = Credentials.from_service_account_info(keyfile_dict, scopes=[
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ])
+    return gspread.authorize(credentials)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Salut! Trimite-mi o poză cu bonul sau factura și mă ocup de restul 🤖")
+    await update.message.reply_text(
+        "Salut! Trimite-mi o poză cu bonul sau factura și începem înregistrarea 📸"
+    )
+    return ConversationHandler.END
 
-# primire poze (bonuri)
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.first_name
-    photo = update.message.photo[-1]  # cea mai mare calitate
+    user_id = update.effective_user.id
+    photo = update.message.photo[-1]
     file = await photo.get_file()
-    
-    # Creează folder temporar dacă nu există
     os.makedirs("temp", exist_ok=True)
-
     file_path = f"temp/{photo.file_unique_id}.jpg"
     await file.download_to_drive(file_path)
 
-    await update.message.reply_text(f"Mulțumesc, {user}! Bonul a fost primit ✅\nÎl trimit acum spre procesare 🔄")
+    user_data[user_id] = {
+        "photo_path": file_path
+    }
 
-    # Aici poți trimite fișierul la OCRBot sau salvezi în Drive
+    reply_keyboard = [[f] for f in FIRME.keys()]
+    await update.message.reply_text(
+        "Pentru ce firmă este acest bon?",
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
+    )
+    return SELECT_FIRMA
 
-# fallback pt text
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Trimite-mi o poză cu un bon sau o factură 📷")
+async def select_firma(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    firma = update.message.text
+    if firma not in FIRME:
+        await update.message.reply_text("Te rog alege o firmă validă.")
+        return SELECT_FIRMA
+
+    user_data[user_id]["firma"] = firma
+    await update.message.reply_text("1️⃣ Cine a emis bonul?", reply_markup=ReplyKeyboardRemove())
+    return GET_EMITENT
+
+async def get_emitent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data[user_id]["emitent"] = update.message.text
+    await update.message.reply_text("2️⃣ Ce sumă apare pe bon?")
+    return GET_SUM
+
+async def get_sum(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data[user_id]["suma"] = update.message.text
+    await update.message.reply_text("3️⃣ Ce dată apare pe bon? (ex: 22.04.2025)")
+    return GET_DATE
+
+async def get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data[user_id]["data"] = update.message.text
+    await update.message.reply_text("4️⃣ Ce tip de cheltuială este? (ex: alimentație, transport, birou)")
+    return GET_CATEGORY
+
+async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data[user_id]["categorie"] = update.message.text
+
+    data = user_data[user_id]
+    sheet_name = FIRME[data["firma"]]
+    client = get_gspread_client()
+    try:
+        sheet = client.open(sheet_name).worksheet("Bonuri")
+    except Exception as e:
+        await update.message.reply_text(f"Eroare la accesarea fișierului Google Sheet: {e}")
+        return ConversationHandler.END
+
+    photo_link = ""  # (opțional: aici poți salva linkul dacă folosești Drive)
+
+    # Scrie rândul în sheet
+    sheet.append_row([
+        data["data"],
+        data["emitent"],
+        data["suma"],
+        data["categorie"],
+        photo_link
+    ])
+
+    await update.message.reply_text(f"✅ Bonul a fost salvat în fișierul firmei *{data['firma']}*. Mulțumim!")
+    del user_data[user_id]  # resetăm datele
+
+    return ConversationHandler.END
 
 def main():
-    token = os.getenv("TELEGRAM_TOKEN")
-    print("DEBUG TOKEN:", token)  # Poți șterge după testare
+    app = ApplicationBuilder().token(os.getenv("TELEGRAM_TOKEN")).build()
 
-    app = ApplicationBuilder().token(token).build()
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
+        states={
+            SELECT_FIRMA: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_firma)],
+            GET_EMITENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_emitent)],
+            GET_SUM: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_sum)],
+            GET_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date)],
+            GET_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_category)],
+        },
+        fallbacks=[CommandHandler("start", start)],
+    )
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(conv_handler)
 
     app.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
