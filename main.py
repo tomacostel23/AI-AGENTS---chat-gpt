@@ -139,3 +139,36 @@ def main():
 
 if __name__ == "__main__":
     main()
+async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data[user_id]["categorie"] = update.message.text
+
+    data = user_data[user_id]
+    sheet_name = FIRME[data["firma"]]
+
+    try:
+        client = get_gspread_client()
+        sheet = client.open(sheet_name).worksheet("Bonuri")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Eroare la accesarea Google Sheet: {e}")
+        print("EROARE LA ACCESARE SHEET:", e)
+        return ConversationHandler.END
+
+    photo_link = ""  # poți pune aici un link în viitor
+
+    try:
+        sheet.append_row([
+            data["data"],
+            data["emitent"],
+            data["suma"],
+            data["categorie"],
+            photo_link
+        ])
+        await update.message.reply_text(f"✅ Bonul a fost salvat în fișierul firmei *{data['firma']}*. Mulțumim!")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Eroare la salvarea datelor: {e}")
+        print("EROARE LA SCRIERE IN SHEET:", e)
+
+    del user_data[user_id]
+    return ConversationHandler.END
+
