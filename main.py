@@ -1,5 +1,4 @@
 import os
-import openai
 import json
 import logging
 from datetime import datetime
@@ -13,6 +12,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.service_account import Credentials as DriveCredentials
+import openai
 
 # Config logger
 logging.basicConfig(level=logging.INFO)
@@ -177,6 +177,29 @@ async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del user_data[user_id]
     return ConversationHandler.END
 
+# AI fallback pentru întrebări libere
+
+async def ai_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text
+    await update.message.chat.send_action(action="typing")
+
+    try:
+        openai.api_key = os.getenv("OPENAI_API_KEY")
+
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "Ești un asistent financiar care răspunde clar și simplu la întrebări legate de contabilitate primară pentru firme mici din România. Răspunde ca un prieten de încredere, dar corect."},
+                {"role": "user", "content": user_message}
+            ]
+        )
+
+        reply = response.choices[0].message.content.strip()
+        await update.message.reply_text(reply)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Eroare la comunicarea cu ChatGPT:\n{e}")
+
 # Main
 
 def main():
@@ -196,37 +219,9 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_fallback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_fallback))
 
     app.run_polling()
 
 if __name__ == "__main__":
     main()
-import openai
-
-async def ai_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
-    await update.message.chat.send_action(action="typing")
-
-    try:
-        openai.api_key = os.getenv("OPENAI_API_KEY")
-
-        response = openai.ChatCompletion.create(
-            model="gpt-4",  # sau "gpt-3.5-turbo" dacă preferi
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Ești un asistent financiar care răspunde clar și simplu la întrebări legate de contabilitate primară pentru firme mici din România. Răspunde ca un prieten de încredere, dar corect."
-                },
-                {
-                    "role": "user",
-                    "content": user_message
-                }
-            ]
-        )
-
-        reply = response.choices[0].message.content.strip()
-        await update.message.reply_text(reply)
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ Eroare la comunicarea cu ChatGPT:\n{e}")
