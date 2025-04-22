@@ -187,7 +187,7 @@ async def ai_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         openai.api_key = os.getenv("OPENAI_API_KEY")
 
         response = openai.ChatCompletion.create(
-            model="gpt-4",
+            model="gpt-4-1106-preview",
             messages=[
                 {"role": "system", "content": "Ești un asistent financiar care răspunde clar și simplu la întrebări legate de contabilitate primară pentru firme mici din România. Răspunde ca un prieten de încredere, dar corect."},
                 {"role": "user", "content": user_message}
