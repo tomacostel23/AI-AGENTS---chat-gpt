@@ -12,26 +12,20 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.service_account import Credentials as DriveCredentials
-import openai
 
 # Config logger
 logging.basicConfig(level=logging.INFO)
 
 # Stările conversației
-SELECT_FIRMA, GET_EMITENT, GET_SUM, GET_DATE, GET_CATEGORY = range(5)
+SELECT_FIRMA, GET_EMITENT, GET_SUM, GET_DATE, GET_CATEGORY, PROCESS_CHOICE = range(6)
 
 # Dicționar temporar per utilizator
 user_data = {}
 
 # Sheets și foldere per firmă
-FIRME = {
-    "Costel Financial Broker SRL": "bonuri_costel_financial",
-    "Like Arrows SRL": "bonuri_like_arrows"
-}
-DRIVE_FOLDERS = {
-    "Costel Financial Broker SRL": "1nJYF876VwK9Fa1E2hBheqMIOEu8JY7Jw",
-    "Like Arrows SRL": "1uXbiK07wKZc6EAxfGsFIOIhIdyqcj3eD"
-}
+FIRMA_FIX = "Costel Financial Broker SRL"
+SHEET_NAME = "bonuri_costel_financial"
+DRIVE_FOLDER_ID = "1nJYF876VwK9Fa1E2hBheqMIOEu8JY7Jw"
 
 # Sheets
 
@@ -54,24 +48,10 @@ def get_drive_service():
     ])
     return build("drive", "v3", credentials=creds)
 
-def create_or_get_folder(service, name, parent_id):
-    query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
-    results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
-    files = results.get("files", [])
-    if files:
-        return files[0]["id"]
-    file_metadata = {
-        "name": name,
-        "mimeType": "application/vnd.google-apps.folder",
-        "parents": [parent_id]
-    }
-    file = service.files().create(body=file_metadata, fields="id").execute()
-    return file.get("id")
-
 # Comenzi
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Salut! Trimite-mi o poză cu bonul și începem înregistrarea 📸")
+    await update.message.reply_text("Salut! Trimite-mi o poză cu bonul și alegi ce vrei să fac 📸")
     return ConversationHandler.END
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -84,23 +64,33 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_data[user_id] = {"photo_path": file_path}
 
-    reply_keyboard = [[f] for f in FIRME.keys()]
+    reply_keyboard = [["Adaugă ca bon"], ["Analizează cu AI"]]
     await update.message.reply_text(
-        "Pentru ce firmă este acest bon?",
+        "📸 Ce vrei să fac cu această poză?",
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
     )
-    return SELECT_FIRMA
+    return PROCESS_CHOICE
 
-async def select_firma(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def process_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    firma = update.message.text
-    if firma not in FIRME:
-        await update.message.reply_text("Te rog alege o firmă validă.")
-        return SELECT_FIRMA
+    choice = update.message.text.lower()
 
-    user_data[user_id]["firma"] = firma
-    await update.message.reply_text("1️⃣ Cine a emis bonul?", reply_markup=ReplyKeyboardRemove())
-    return GET_EMITENT
+    if "adaugă" in choice:
+        user_data[user_id]["firma"] = FIRMA_FIX
+        await update.message.reply_text("1️⃣ Cine a emis bonul?", reply_markup=ReplyKeyboardRemove())
+        return GET_EMITENT
+
+    elif "analizează" in choice:
+        photo_path = user_data[user_id]["photo_path"]
+        await update.message.reply_text("🔍 Analizez poza, te rog așteaptă...")
+        # Placeholder pentru analiza AI (poți adăuga Google Vision sau alt AI aici)
+        await update.message.reply_text("✅ Am analizat poza (exemplu). Vrei altceva?")
+        del user_data[user_id]
+        return ConversationHandler.END
+
+    else:
+        await update.message.reply_text("Te rog alege o opțiune validă: Adaugă ca bon sau Analizează cu AI.")
+        return PROCESS_CHOICE
 
 async def get_emitent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -125,14 +115,12 @@ async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[user_id]["categorie"] = update.message.text
 
     data = user_data[user_id]
-    sheet_name = FIRME[data["firma"]]
-    drive_folder_id = DRIVE_FOLDERS[data["firma"]]
     photo_path = data["photo_path"]
 
     try:
         drive_service = get_drive_service()
         sheet_client = get_gspread_client()
-        sheet = sheet_client.open(sheet_name).worksheet("Bonuri")
+        sheet = sheet_client.open(SHEET_NAME).worksheet("Bonuri")
     except Exception as e:
         await update.message.reply_text(f"❌ Eroare la inițializare Drive/Sheets:\n{e}")
         return ConversationHandler.END
@@ -140,7 +128,23 @@ async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         date_obj = datetime.strptime(data["data"], "%d.%m.%Y")
         folder_luna = date_obj.strftime("%B_%Y").capitalize()
-        folder_bonuri = create_or_get_folder(drive_service, "Bonuri", drive_folder_id)
+
+        # Creăm foldere dacă nu există
+        def create_or_get_folder(service, name, parent_id):
+            query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
+            results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+            files = results.get("files", [])
+            if files:
+                return files[0]["id"]
+            file_metadata = {
+                "name": name,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [parent_id]
+            }
+            file = service.files().create(body=file_metadata, fields="id").execute()
+            return file.get("id")
+
+        folder_bonuri = create_or_get_folder(drive_service, "Bonuri", DRIVE_FOLDER_ID)
         folder_luna_id = create_or_get_folder(drive_service, folder_luna, folder_bonuri)
 
         file_metadata = {
@@ -177,29 +181,6 @@ async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del user_data[user_id]
     return ConversationHandler.END
 
-# AI fallback pentru întrebări libere
-
-async def ai_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
-    await update.message.chat.send_action(action="typing")
-
-    try:
-        openai.api_key = os.getenv("OPENAI_API_KEY")
-
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Ești un asistent financiar care răspunde clar și simplu la întrebări legate de contabilitate primară pentru firme mici din România. Răspunde ca un prieten de încredere, dar corect."},
-                {"role": "user", "content": user_message}
-            ]
-        )
-
-        reply = response.choices[0].message.content.strip()
-        await update.message.reply_text(reply)
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ Eroare la comunicarea cu ChatGPT:\n{e}")
-
 # Main
 
 def main():
@@ -208,7 +189,7 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
         states={
-            SELECT_FIRMA: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_firma)],
+            PROCESS_CHOICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_choice)],
             GET_EMITENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_emitent)],
             GET_SUM: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_sum)],
             GET_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_date)],
@@ -219,7 +200,6 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_fallback))
 
     app.run_polling()
 
