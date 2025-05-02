@@ -12,6 +12,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.service_account import Credentials as DriveCredentials
+import openai
 
 # Config logger
 logging.basicConfig(level=logging.INFO)
@@ -83,8 +84,7 @@ async def process_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif "analizează" in choice:
         photo_path = user_data[user_id]["photo_path"]
         await update.message.reply_text("🔍 Analizez poza, te rog așteaptă...")
-        # Placeholder pentru analiza AI (poți adăuga Google Vision sau alt AI aici)
-        await update.message.reply_text("✅ Am analizat poza (exemplu). Vrei altceva?")
+        await update.message.reply_text("✅ Am analizat poza (exemplu). Poți pune întrebări despre ea sau orice altceva!")
         del user_data[user_id]
         return ConversationHandler.END
 
@@ -129,7 +129,6 @@ async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
         date_obj = datetime.strptime(data["data"], "%d.%m.%Y")
         folder_luna = date_obj.strftime("%B_%Y").capitalize()
 
-        # Creăm foldere dacă nu există
         def create_or_get_folder(service, name, parent_id):
             query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
             results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
@@ -181,6 +180,23 @@ async def get_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del user_data[user_id]
     return ConversationHandler.END
 
+async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text
+    await update.message.reply_text("💬 Procesăm întrebarea ta cu AI, așteaptă...")
+    try:
+        openai.api_key = os.getenv("OPENAI_API_KEY")
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Ești un asistent contabil care oferă răspunsuri clare și precise."},
+                {"role": "user", "content": user_message}
+            ]
+        )
+        answer = response.choices[0].message.content
+        await update.message.reply_text(answer)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Eroare la comunicarea cu ChatGPT:\n{e}")
+
 # Main
 
 def main():
@@ -200,8 +216,10 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_general_text))
 
     app.run_polling()
 
 if __name__ == "__main__":
     main()
+
